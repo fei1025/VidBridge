@@ -30,4 +30,25 @@ class ServerConfig {
   final DateTime updatedAt;
   final DateTime? lastConnectedAt;
   final String? lastVisitedPath;
+
+  ServerConfig copyWith({
+    DateTime? updatedAt,
+    DateTime? lastConnectedAt,
+    String? lastVisitedPath,
+  }) => ServerConfig(
+    id: id,
+    name: name,
+    host: host,
+    port: port,
+    protocol: protocol,
+    credentialId: credentialId,
+    isAnonymous: isAnonymous,
+    createdAt: createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+    shareName: shareName,
+    username: username,
+    initialPath: initialPath,
+    lastConnectedAt: lastConnectedAt ?? this.lastConnectedAt,
+    lastVisitedPath: lastVisitedPath ?? this.lastVisitedPath,
+  );
 }

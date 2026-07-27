@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../../core/errors/app_failure.dart';
+import '../../../file_browser/presentation/providers/file_browser_providers.dart';
 import '../../domain/models/server_config.dart';
 import '../providers/server_providers.dart';
 
@@ -58,9 +60,7 @@ class _ServerCard extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) => Card(
     child: InkWell(
       borderRadius: BorderRadius.circular(20),
-      onTap: () => ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('SMB 目录浏览将在下一阶段启用'))),
+      onTap: () => context.push('/servers/${server.id}/browse'),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Row(
@@ -90,11 +90,21 @@ class _ServerCard extends ConsumerWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 8),
-                  const Row(
+                  Row(
                     children: [
-                      Icon(Icons.circle_outlined, size: 12),
-                      SizedBox(width: 6),
-                      Text('尚未测试连接', style: TextStyle(fontSize: 12)),
+                      Icon(
+                        server.lastConnectedAt == null
+                            ? Icons.circle_outlined
+                            : Icons.check_circle_outline,
+                        size: 12,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        server.lastConnectedAt == null
+                            ? '尚未测试连接'
+                            : '最近连接：${_formatTime(server.lastConnectedAt!)}',
+                        style: const TextStyle(fontSize: 12),
+                      ),
                     ],
                   ),
                 ],
@@ -104,11 +114,14 @@ class _ServerCard extends ConsumerWidget {
               onSelected: (value) async {
                 if (value == 'edit') {
                   await context.push('/servers/${server.id}/edit');
+                } else if (value == 'test') {
+                  await _testConnection(context, ref);
                 } else if (value == 'delete' && context.mounted) {
                   await _confirmDelete(context, ref);
                 }
               },
               itemBuilder: (context) => const [
+                PopupMenuItem(value: 'test', child: Text('测试连接')),
                 PopupMenuItem(value: 'edit', child: Text('编辑')),
                 PopupMenuItem(value: 'delete', child: Text('删除')),
               ],
@@ -147,6 +160,26 @@ class _ServerCard extends ConsumerWidget {
         ).showSnackBar(const SnackBar(content: Text('删除失败，请稍后重试。')));
       }
     }
+  }
+
+  Future<void> _testConnection(BuildContext context, WidgetRef ref) async {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(const SnackBar(content: Text('正在测试 SMB 连接…')));
+    try {
+      await ref.read(remoteBrowserServiceProvider).testConnection(server);
+      ref.invalidate(serversProvider);
+      messenger.showSnackBar(const SnackBar(content: Text('连接成功，可以浏览共享目录。')));
+    } catch (error) {
+      final message = error is AppFailure ? error.message : '连接失败，请检查服务器配置。';
+      messenger.showSnackBar(SnackBar(content: Text(message)));
+    }
+  }
+
+  String _formatTime(DateTime value) {
+    String two(int number) => number.toString().padLeft(2, '0');
+    final local = value.toLocal();
+    return '${local.month}-${two(local.day)} '
+        '${two(local.hour)}:${two(local.minute)}';
   }
 }
 

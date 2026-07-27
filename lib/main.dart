@@ -7,10 +7,12 @@ import 'app/app.dart';
 import 'core/logging/app_logger.dart';
 
 void main() {
-  WidgetsFlutterBinding.ensureInitialized();
   AppLogger.initialize();
   runZonedGuarded(
-    () => runApp(const ProviderScope(child: LanPlayerApp())),
+    () {
+      WidgetsFlutterBinding.ensureInitialized();
+      runApp(const ProviderScope(child: LanPlayerApp()));
+    },
     (error, stackTrace) => AppLogger.error(
       'Unhandled application error',
       error: error,
