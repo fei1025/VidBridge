@@ -263,7 +263,7 @@ fun AddSourceScreen(container: AppContainer, sourceId: String? = null, onBack: (
                 item {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Switch(draft.anonymous, onCheckedChange = { value -> vm.update { it.copy(anonymous = value) } })
-                        Text("匿名访问", Modifier.padding(start = 12.dp))
+                        Text("免密码/来宾访问", Modifier.padding(start = 12.dp))
                     }
                 }
                 if (!draft.anonymous) {

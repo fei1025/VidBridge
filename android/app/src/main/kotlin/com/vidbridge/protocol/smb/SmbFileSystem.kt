@@ -1,5 +1,6 @@
 package com.vidbridge.protocol.smb
 
+import android.util.Log
 import com.hierynomus.msdtyp.AccessMask
 import com.hierynomus.mssmb2.SMB2CreateDisposition
 import com.hierynomus.mssmb2.SMB2CreateOptions
@@ -48,11 +49,7 @@ class SmbFileSystem(
         try {
             val smbConnection = smbClient.connect(config.endpoint.host, config.endpoint.port)
             val password = password()
-            val auth = if (config.username.isNullOrBlank()) {
-                AuthenticationContext.anonymous()
-            } else {
-                AuthenticationContext(config.username, password.toCharArray(), null)
-            }
+            val auth = smbAuthenticationContext(config.username, password)
             val smbSession = smbConnection.authenticate(auth)
             client = smbClient
             connection = smbConnection
@@ -156,6 +153,7 @@ class SmbFileSystem(
 
     private fun mapFailure(error: Throwable): SourceFailure {
         if (error is SourceFailure) return error
+        Log.e(LOG_TAG, "SMB operation failed (${error.javaClass.name}): ${error.message}", error)
         val message = error.message.orEmpty().lowercase()
         return when {
             "logon" in message || "authentication" in message || "credentials" in message -> SourceFailure.AuthenticationRejected(error)
@@ -167,10 +165,20 @@ class SmbFileSystem(
         }
     }
 
-    companion object { private const val DIRECTORY_ATTRIBUTE: Long = 16 }
+    companion object {
+        private const val DIRECTORY_ATTRIBUTE: Long = 16
+        private const val LOG_TAG = "VidBridgeSMB"
+    }
 }
 
 internal data class SmbLocation(val shareName: String, val relativePath: RemotePath)
+
+internal fun smbAuthenticationContext(username: String?, password: String): AuthenticationContext =
+    if (username.isNullOrBlank()) {
+        AuthenticationContext.guest()
+    } else {
+        AuthenticationContext(username, password.toCharArray(), null)
+    }
 
 internal object SmbPathRouter {
     fun resolve(configuredShare: String?, path: RemotePath): SmbLocation? {
@@ -197,7 +205,7 @@ private class JcifsSmbShareDiscovery : SmbShareDiscovery {
         }
         val baseContext = BaseContext(PropertyConfiguration(properties))
         val context = if (config.username.isNullOrBlank()) {
-            baseContext.withAnonymousCredentials()
+            baseContext.withGuestCrendentials()
         } else {
             baseContext.withCredentials(NtlmPasswordAuthenticator("", config.username, password))
         }
