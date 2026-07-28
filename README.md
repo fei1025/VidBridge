@@ -1,118 +1,59 @@
-# LanPlayer
+# VidBridge
 
-LanPlayer 是一个以 Android 为第一目标平台的 Flutter 局域网视频播放器。当前已完成服务器管理、SMB2/SMB3 目录浏览，以及通过 VLC 播放 SMB 视频和 Seek 回验。
+VidBridge 是使用 Kotlin 和 Jetpack Compose 编写的 Android 原生媒体播放器。工程已经移除 Flutter、Dart 与 Flutter 插件，播放生命周期由 AndroidX Media3 管理。
 
-## 当前状态
+## 已实现
 
-已实现：
+- Compose、Material 3、Navigation Compose 与 ViewModel/StateFlow 单向状态
+- Storage Access Framework 本地文件夹来源与持久读取授权，无传统存储权限
+- 来源新增、编辑、删除、连接测试，以及本地、SMB、WebDAV 共用的浏览与播放流程
+- Room v3 保存来源、远端索引、媒体项目、媒体版本、NFO 元数据、图片引用、历史、收藏和扫描任务
+- WorkManager 分页后台扫描、隐藏/系统目录过滤、文件指纹、断点重试、取消、陈旧索引清理
+- 电影/剧集文件名解析、Kodi 风格 NFO、小型本地海报引用和质量版本聚合
+- 媒体库搜索、继续观看、视频/文件夹收藏及收藏目录跳转
+- Android Keystore AES-GCM 加密密码；Room、导航和播放 URI 仅保存凭据引用
+- SMBJ 的 SMB 2/3 登录、目录浏览和随机读取
+- OkHttp WebDAV/HTTPS 的 PROPFIND、Basic 认证、HTTP Range、重定向及证书错误映射
+- 协议无关的 `RemoteFileSystem`、能力模型、错误模型与 Media3 `DataSource`
+- Media3 `MediaSessionService`、ExoPlayer、系统播放控制、通知、音频焦点和耳机断开处理
+- 按需随机读取与 Seek，不会先完整下载大型视频
+- 每 10 秒及退出时保存当前队列项进度，30 秒后断点续播，并连续播放同一来源的媒体库队列
+- 画中画入口，以及倍速、画面比例、网络缓冲、完成阈值、常亮、横屏和隐藏文件设置
+- Room schema 导出、2→3 迁移测试基建和 JVM 协议/解析规则测试
 
-- Flutter Android 项目、Material 3 深浅色主题
-- Riverpod 状态管理和 go_router 路由
-- Drift/SQLite 服务器配置表
-- 网络位置空状态、加载状态、错误状态和服务器卡片
-- 添加、编辑、删除 SMB 服务器配置
-- 服务器名称、主机和端口表单校验
-- 匿名访问和用户名密码配置
-- 密码通过 flutter_secure_storage 写入 Android Keystore 支持的安全存储
-- SQLite 仅保存随机 credentialId，不保存密码
-- Android 网络、网络状态和 Wi-Fi 状态权限
-- 全局异常入口和不记录认证参数的日志基础设施
-- 单元测试和 Widget 测试
-- 基于 dart_smb2/libsmb2 的 SMB 2.02–3.1.1 认证和连接测试
-- SMB 共享目录浏览、面包屑、返回上级、刷新和失败重试
-- 文件名搜索、名称/时间/大小排序和文件夹优先
-- 常见视频与字幕扩展名过滤
-- 最近连接时间和最近访问目录持久化
-- 基于 flutter_vlc_player/libVLC 的 Android 视频播放
-- SMB 文件句柄随机读与本机回环 HTTP Range 播放桥接
-- 进度条 Seek、前进 30 秒和实际播放位置回验
+总体边界和演进设计见 [Android 原生媒体架构](docs/android-native-media-architecture.md)。
 
-尚未实现：
+## 环境与构建
 
-- 音轨和字幕切换
-- 播放历史、收藏、设置和本地视频
-
-界面中的“尚未测试连接”表示尚未完成过真实认证。服务器菜单中的“测试连接”会连接共享并读取初始目录。
-
-## 环境要求
-
-- Flutter 3.44.6 或兼容的 stable 版本
-- Dart 3.12 或更高版本
-- Android SDK
-- Android 7.0（API 24）或更高版本（dart_smb2 原生库要求）
-
-## 启动项目
+- Android Studio / Android SDK 36
+- JDK 17
+- Android 7.0（API 24）或更高版本
 
 在 PowerShell 中执行：
 
-    flutter pub get
-    flutter pub run build_runner build
-    flutter analyze
-    flutter test
-    flutter run
+    Set-Location android
+    .\gradlew.bat testDebugUnitTest assembleDebug
 
-数据库表变更后需要重新运行 Drift 代码生成命令。
+APK 输出到 `android/app/build/outputs/apk/debug/app-debug.apk`。Room 迁移仪器测试需要连接模拟器或真机后执行 `connectedDebugAndroidTest`。
 
-## 添加网络位置
+## 使用
 
-1. 打开应用，点击“添加服务器”。
-2. 填写便于识别的服务器名称。
-3. 主机只填写 IP 或主机名，例如 192.168.1.10 或 nas.local，不要填写协议和目录。
-4. 端口通常保持 445。
-5. 共享名称填写 Windows/NAS 对外发布的共享名，例如 Videos，不是本机磁盘路径。
-6. 初始目录是共享目录下的相对路径，例如 Movies/2026。
-7. 匿名共享打开“匿名访问”；否则填写账号密码。
+1. 启动应用，选择“添加来源”，再选择本地、SMB 或 WebDAV。
+2. 本地来源通过系统文件夹选择器授权；网络来源的主机只填写 IP 或主机名。
+3. SMB 端口通常为 445，共享名称例如 `Videos`；WebDAV 默认使用 HTTPS 443。
+4. 保存后可浏览并直接播放，也可从来源菜单启动媒体库扫描。
+5. 扫描状态显示在来源卡片；媒体库提供全部、继续观看和收藏三个分区。
 
-保存后可在服务器菜单中测试连接，或点击服务器卡片直接连接并浏览目录。当前 SMB 引擎只支持标准端口 445。
+Windows 需同时授予共享权限与 NTFS 读取权限。NAS 建议只启用 SMB2/3，并使用只有媒体读取权限的专用账号。
 
-## Windows 共享准备
+## 安全边界
 
-1. 在 Windows 中为目标文件夹启用“高级共享”。
-2. 设置共享名称，并给用于 LanPlayer 登录的 Windows 用户授予共享权限和 NTFS 读取权限。
-3. 确保网络配置为专用网络，并允许“文件和打印机共享”通过防火墙。
-4. 保持 SMB 2/3 可用。不要为了兼容此应用启用过时的 SMB 1。
-5. 在手机与电脑连接同一局域网后，使用电脑局域网 IP、端口 445、共享名称和 Windows 账号填写应用表单。
+- 密码、认证头和 Cookie 不进入 Room、URI、导航参数或日志。
+- 凭据由 AndroidKeyStore 设备密钥保护；删除来源会清理对应凭据与 SAF 授权。
+- WebDAV 默认 HTTPS，应用禁用明文 HTTP，不会全局绕过 TLS 校验。
+- 播放器只通过来源 ID、逻辑路径和协议抽象读取字节。
+- 应用禁用系统自动备份。
 
-## NAS 连接准备
+## 仍需外部环境验证或后续扩展
 
-在 NAS 管理界面启用 SMB 服务并将最低协议设置为 SMB2、最高协议设置为 SMB3。创建仅有目标媒体目录读取权限的专用账号，并记录共享名称。不要把 NAS 管理员账号用于日常播放。
-
-目录浏览和播放源已支持中文、空格和深层相对路径。点击视频即可进入 VLC 播放页；拖动进度条或点击“前进 30 秒”后，页面会在实际播放位置到达目标附近时显示“Seek 已验证”。请继续用真实 NAS 验证不同编码和 5GB 以上 MKV 的长时间播放稳定性。
-
-## 安全说明
-
-- 密码不进入 Drift 数据库。
-- 日志接口不接收或输出密码、带密码 URI 和完整认证参数。
-- Android 自动备份已关闭，避免加密数据恢复后与设备密钥不匹配。
-- 删除服务器时会同时删除关联的安全凭据。
-
-## 打包
-
-调试 APK：
-
-    flutter build apk --debug
-
-发布前应创建自己的签名配置，再执行：
-
-    flutter build appbundle --release
-
-默认包名是占位值 com.example.lan_player。修改包名时需要同步调整：
-
-- android/app/build.gradle.kts 中的 namespace 和 applicationId
-- android/app/src/main/kotlin 下的包目录
-- MainActivity.kt 的 package 声明
-
-应用显示名称在 AndroidManifest.xml 的 android:label 中修改。
-
-## 架构
-
-项目遵循 Feature First 和 presentation/domain/data 分层。详情见 docs/architecture.md。
-
-## 已知问题
-
-- 已选用 dart_smb2 0.1.1（libsmb2），但尚未在本仓库环境的 Android 真机和真实 Windows/NAS 共享上做互操作验证。
-- dart_smb2 当前不暴露自定义 SMB 端口，连接仅支持 445。
-- 插件原生库支持 Android API 24 起，不再支持 Android 6.0。
-- 自动化测试已验证 HTTP Range 到 SMB offset/length 的映射，真实 NAS 的吞吐、休眠重连和超大文件仍需真机互操作验证。
-- 当前包名和发布签名均为开发占位配置。
-- Android 构建暂时固定为 AGP 8.13.2 / Gradle 8.13：当前安全存储与 jni 传递依赖使用不同的 AGP 9 Kotlin 迁移方式。Flutter 会提示未来升级 Gradle；升级前需先验证这些插件均已支持 AGP 9 内置 Kotlin。
+以下项目依赖真实设备、服务器或第三方服务，不能由仓库内软件测试替代：5GB+ 高码率视频长时间播放，HDR/杜比与特殊音频直通，厂商硬解兼容性，复杂外挂字幕，NAS 休眠/网络切换恢复，以及 Release Macrobenchmark。NFS、SFTP、Jellyfin/Emby/Plex、DLNA、TMDB、Glance 桌面组件和 Android TV 属于架构文档明确列出的后续来源或平台阶段，当前工厂会对未实现类型返回统一“不支持”错误，不会伪装成文件协议。
