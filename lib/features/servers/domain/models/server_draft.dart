@@ -3,6 +3,7 @@ class ServerDraft {
     required this.name,
     required this.host,
     required this.port,
+    required this.protocol,
     required this.isAnonymous,
     this.shareName,
     this.username,
@@ -13,6 +14,7 @@ class ServerDraft {
   final String name;
   final String host;
   final int port;
+  final String protocol;
   final String? shareName;
   final String? username;
   final String? password;

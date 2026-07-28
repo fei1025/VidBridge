@@ -22,9 +22,6 @@ final class RemoteBrowserService {
     if (server == null) {
       throw const FileNotFoundFailure('网络位置已被删除。');
     }
-    if (server.shareName?.trim().isEmpty ?? true) {
-      throw const ConnectionFailure('请先编辑服务器并填写共享名称。');
-    }
     final password = await _passwordFor(server);
     final fileSystem = _fileSystemFactory.create(server, password: password);
     try {

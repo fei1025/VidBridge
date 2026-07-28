@@ -42,7 +42,9 @@ dependencies:
   uuid: ^4.6.0
   logging: ^1.3.0
   dart_smb2: ^0.1.1
-  flutter_vlc_player: ^7.4.4
+  smb_connect: ^0.0.9
+  flutter_vlc_player:
+    path: third_party/flutter_vlc_player
 
 dev_dependencies:
   flutter_test:

@@ -28,6 +28,7 @@ void main() {
         name: 'NAS',
         host: '192.168.1.8',
         port: 445,
+        protocol: 'SMB2',
         username: 'viewer',
         password: 'top-secret-password',
         isAnonymous: false,

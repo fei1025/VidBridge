@@ -26,6 +26,7 @@ class _ServerFormPageState extends ConsumerState<ServerFormPage> {
   final _password = TextEditingController();
   final _initialPath = TextEditingController();
   bool _anonymous = false;
+  String _protocol = 'SMB12';
   bool _obscurePassword = true;
   bool _saving = false;
   ServerConfig? _existing;
@@ -52,6 +53,21 @@ class _ServerFormPageState extends ConsumerState<ServerFormPage> {
     _username.text = server.username ?? '';
     _initialPath.text = server.initialPath ?? '';
     _anonymous = server.isAnonymous;
+    _protocol = server.protocol == 'SMB3' ? 'SMB3' : 'SMB12';
+    if (!server.isAnonymous) _loadSavedPassword(server);
+  }
+
+  Future<void> _loadSavedPassword(ServerConfig server) async {
+    try {
+      final password = await ref
+          .read(credentialStoreProvider)
+          .readPassword(server.credentialId);
+      if (!mounted || _existing?.id != server.id) return;
+      _password.text = password ?? '';
+    } catch (_) {
+      // Keep the password field empty; saving without a replacement keeps the
+      // existing credential in ServerConfigService.
+    }
   }
 
   @override
@@ -125,6 +141,22 @@ class _ServerFormPageState extends ConsumerState<ServerFormPage> {
               keyboardType: TextInputType.number,
               textInputAction: TextInputAction.next,
               validator: ServerFormValidator.port,
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: _protocol,
+              decoration: const InputDecoration(
+                labelText: 'SMB 协议版本',
+                prefixIcon: Icon(Icons.settings_ethernet_outlined),
+              ),
+              items: const [
+                DropdownMenuItem(value: 'SMB12', child: Text('SMB1/SMB2（smb_connect）')),
+                DropdownMenuItem(value: 'SMB1', child: Text('仅 SMB1（smb_connect）')),
+                DropdownMenuItem(value: 'SMB3', child: Text('SMB3（dart_smb2）')),
+              ],
+              onChanged: (value) {
+                if (value != null) setState(() => _protocol = value);
+              },
             ),
             const SizedBox(height: 12),
             TextFormField(
@@ -225,6 +257,7 @@ class _ServerFormPageState extends ConsumerState<ServerFormPage> {
               name: _name.text,
               host: _host.text,
               port: int.parse(_port.text),
+              protocol: _protocol,
               shareName: _share.text,
               username: _username.text,
               password: _password.text,

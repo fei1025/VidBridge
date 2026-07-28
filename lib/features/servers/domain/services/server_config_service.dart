@@ -25,7 +25,7 @@ final class ServerConfigService {
       name: draft.name.trim(),
       host: draft.host.trim(),
       port: draft.port,
-      protocol: 'SMB',
+      protocol: draft.protocol,
       shareName: _emptyToNull(draft.shareName),
       username: draft.isAnonymous ? null : _emptyToNull(draft.username),
       credentialId: credentialId,

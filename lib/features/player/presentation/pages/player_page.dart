@@ -69,7 +69,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       final controller = VlcPlayerController.network(
         session.uri.toString(),
         hwAcc: HwAcc.full,
-        autoPlay: true,
+        autoPlay: false,
         options: VlcPlayerOptions(
           advanced: VlcAdvancedOptions([
             VlcAdvancedOptions.networkCaching(1500),
@@ -103,7 +103,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
   Future<void> _seekTo(Duration target) async {
     final controller = _controller;
-    if (controller == null) return;
+    if (controller == null || !controller.value.isInitialized) return;
     final duration = controller.value.duration;
     final bounded = duration > Duration.zero && target > duration
         ? duration
@@ -153,6 +153,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                       child: VlcPlayer(
                         controller: controller,
                         aspectRatio: value.aspectRatio,
+                        // Hybrid composition is more reliable on recent
+                        // Android versions than the virtual-display path.
+                        virtualDisplay: false,
                         placeholder: const CircularProgressIndicator(),
                       ),
                     ),
@@ -161,14 +164,19 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                     value: value,
                     dragPosition: _dragPosition,
                     seekStatus: _seekStatus,
-                    onTogglePlay: value.isPlaying
+                    onTogglePlay: !value.isInitialized
+                        ? null
+                        : value.isPlaying
                         ? controller.pause
                         : controller.play,
                     onSeekChanged: (position) =>
                         setState(() => _dragPosition = position),
                     onSeekEnd: _seekTo,
-                    onForward: () =>
-                        _seekTo(value.position + const Duration(seconds: 30)),
+                    onForward: !value.isInitialized
+                        ? null
+                        : () => _seekTo(
+                            value.position + const Duration(seconds: 30),
+                          ),
                   ),
                 ],
               ),
@@ -216,10 +224,10 @@ class _PlayerControls extends StatelessWidget {
   final VlcPlayerValue value;
   final Duration? dragPosition;
   final SeekValidationStatus seekStatus;
-  final Future<void> Function() onTogglePlay;
+  final Future<void> Function()? onTogglePlay;
   final ValueChanged<Duration> onSeekChanged;
   final ValueChanged<Duration> onSeekEnd;
-  final VoidCallback onForward;
+  final VoidCallback? onForward;
 
   @override
   Widget build(BuildContext context) {

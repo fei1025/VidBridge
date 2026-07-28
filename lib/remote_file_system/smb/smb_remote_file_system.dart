@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:dart_smb2/dart_smb2.dart';
 
 import '../../core/errors/app_failure.dart';
+import '../../core/logging/app_logger.dart';
 import '../models/remote_file_info.dart';
 import '../models/remote_file_item.dart';
 import '../remote_file_system.dart';
@@ -34,10 +35,17 @@ final class SmbRemoteFileSystem implements RemoteFileSystem {
 
   @override
   Future<void> connect() async {
+    AppLogger.info(
+      'SMB 开始连接：host=$host, port=$port, share=$share, '
+      'anonymous=$isAnonymous, username=${username?.trim().isEmpty ?? true ? '<empty>' : username!.trim()}, '
+      'hasPassword=${password?.isNotEmpty ?? false}, passwordLength=${password?.length ?? 0}',
+    );
     if (port != 445) {
+      AppLogger.error('SMB 连接拒绝：不支持端口 $port，当前仅支持 445。');
       throw const UnsupportedProtocolFailure('当前 SMB 引擎仅支持标准端口 445，请修改服务器端口。');
     }
     if (share.trim().isEmpty) {
+      AppLogger.error('SMB 连接拒绝：共享名称为空。');
       throw const ConnectionFailure('请先填写 SMB 共享名称。');
     }
     try {
@@ -51,11 +59,27 @@ final class SmbRemoteFileSystem implements RemoteFileSystem {
         version: Smb2Version.any,
       );
       await _pool!.echo();
-    } on Smb2Exception catch (error) {
+      AppLogger.info('SMB 连接成功：host=$host, share=$share');
+    } on Smb2Exception catch (error, stackTrace) {
+      AppLogger.error(
+        'SMB 底层异常：type=${error.type}, message=$error',
+        error: error,
+        stackTrace: stackTrace,
+      );
       throw _mapFailure(error);
-    } on UnsupportedError catch (error) {
+    } on UnsupportedError catch (error, stackTrace) {
+      AppLogger.error(
+        'SMB 平台不支持 SMB2/SMB3：$error',
+        error: error,
+        stackTrace: stackTrace,
+      );
       throw UnsupportedProtocolFailure('当前设备不支持 SMB2/SMB3。', error);
-    } catch (error) {
+    } catch (error, stackTrace) {
+      AppLogger.error(
+        'SMB 未分类异常：$error',
+        error: error,
+        stackTrace: stackTrace,
+      );
       throw ConnectionFailure('无法连接服务器，请检查地址和网络。', error);
     }
   }
