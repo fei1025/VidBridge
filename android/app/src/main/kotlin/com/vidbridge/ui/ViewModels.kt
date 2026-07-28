@@ -45,7 +45,12 @@ class SourcesViewModel(
 
     fun test(source: MediaSourceConfig) = viewModelScope.launch {
         val message = try {
-            fileSystems.create(source.id).use { it.connect() }
+            fileSystems.create(source.id).use { remote ->
+                remote.connect()
+                if (source.type == MediaSourceType.SMB && source.shareName.isNullOrBlank()) {
+                    remote.list(RemotePath(""))
+                }
+            }
             "${source.displayName} 连接成功"
         } catch (error: Throwable) {
             error.message ?: "连接失败"
@@ -107,7 +112,6 @@ object SourceFormValidator {
             value.host.contains("://") || value.host.contains('/') || value.host.contains('\\') ->
                 "主机只填写 IP 地址或主机名，不要包含协议或路径"
             value.type != MediaSourceType.LOCAL && (port == null || port !in 1..65535) -> "端口必须是 1 到 65535 之间的数字"
-            value.type == MediaSourceType.SMB && value.shareName.isBlank() -> "请输入 SMB 共享名称"
             value.type != MediaSourceType.LOCAL && !value.anonymous && value.username.isBlank() -> "请输入用户名或启用匿名访问"
             else -> null
         }
@@ -201,7 +205,7 @@ class SourceFormViewModel(private val repository: SourceRepository, private val 
                     tls = value.type == MediaSourceType.WEBDAV && value.tls,
                 ),
                 rootPath = value.rootPath.trim().trim('/', '\\'),
-                shareName = value.shareName.trim().takeIf { value.type == MediaSourceType.SMB },
+                shareName = value.shareName.trim().takeIf { value.type == MediaSourceType.SMB && it.isNotEmpty() },
                 rootUri = value.rootUri.takeIf { value.type == MediaSourceType.LOCAL },
                 username = value.username.trim().takeUnless { value.type == MediaSourceType.LOCAL || value.anonymous || it.isEmpty() },
                 credentialId = existing?.credentialId,

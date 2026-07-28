@@ -12,7 +12,7 @@ VidBridge 是使用 Kotlin 和 Jetpack Compose 编写的 Android 原生媒体播
 - 电影/剧集文件名解析、Kodi 风格 NFO、小型本地海报引用和质量版本聚合
 - 媒体库搜索、继续观看、视频/文件夹收藏及收藏目录跳转
 - Android Keystore AES-GCM 加密密码；Room、导航和播放 URI 仅保存凭据引用
-- SMBJ 的 SMB 2/3 登录、目录浏览和随机读取
+- SMB 2/3 登录、服务器共享发现、目录浏览和随机读取
 - OkHttp WebDAV/HTTPS 的 PROPFIND、Basic 认证、HTTP Range、重定向及证书错误映射
 - 协议无关的 `RemoteFileSystem`、能力模型、错误模型与 Media3 `DataSource`
 - Media3 `MediaSessionService`、ExoPlayer、系统播放控制、通知、音频焦点和耳机断开处理
@@ -40,7 +40,7 @@ APK 输出到 `android/app/build/outputs/apk/debug/app-debug.apk`。Room 迁移�
 
 1. 启动应用，选择“添加来源”，再选择本地、SMB 或 WebDAV。
 2. 本地来源通过系统文件夹选择器授权；网络来源的主机只填写 IP 或主机名。
-3. SMB 端口通常为 445，共享名称例如 `Videos`；WebDAV 默认使用 HTTPS 443。
+3. SMB 端口通常为 445；共享名称可留空以自动列出服务器共享，也可填写 `Videos` 等名称直接进入。WebDAV 默认使用 HTTPS 443。
 4. 保存后可浏览并直接播放，也可从来源菜单启动媒体库扫描。
 5. 扫描状态显示在来源卡片；媒体库提供全部、继续观看和收藏三个分区。
 

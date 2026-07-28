@@ -21,7 +21,7 @@ class SourceFormValidatorTest {
     }
 
     @Test
-    fun smbRequiresShareName() {
+    fun smbShareNameIsOptional() {
         val draft = SourceDraft(
             type = MediaSourceType.SMB,
             displayName = "NAS",
@@ -29,7 +29,7 @@ class SourceFormValidatorTest {
             port = "445",
             username = "media",
         )
-        assertEquals("请输入 SMB 共享名称", SourceFormValidator.validate(draft))
+        assertNull(SourceFormValidator.validate(draft))
     }
 
     @Test

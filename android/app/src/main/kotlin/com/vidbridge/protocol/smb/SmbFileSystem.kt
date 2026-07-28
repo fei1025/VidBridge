@@ -11,16 +11,23 @@ import com.hierynomus.smbj.session.Session
 import com.hierynomus.smbj.share.DiskShare
 import com.vidbridge.core.security.CredentialStore
 import com.vidbridge.protocol.api.*
+import jcifs.SmbConstants
+import jcifs.config.PropertyConfiguration
+import jcifs.context.BaseContext
+import jcifs.smb.NtlmPasswordAuthenticator
+import jcifs.smb.SmbFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.util.EnumSet
+import java.util.Properties
 
 class SmbFileSystem(
     private val config: MediaSourceConfig,
     private val credentialStore: CredentialStore,
+    private val shareDiscovery: SmbShareDiscovery = JcifsSmbShareDiscovery(),
 ) : RemoteFileSystem {
     override val sourceId: String = config.id
     override val capabilities = SourceCapabilities(
@@ -33,28 +40,26 @@ class SmbFileSystem(
     private var client: SMBClient? = null
     private var connection: Connection? = null
     private var session: Session? = null
-    private var share: DiskShare? = null
+    private val shares = linkedMapOf<String, DiskShare>()
 
     override suspend fun connect() = withContext(Dispatchers.IO) {
-        if (share != null) return@withContext
-        val shareName = config.shareName?.takeIf { it.isNotBlank() }
-            ?: throw SourceFailure.ProtocolMismatch()
+        if (session != null) return@withContext
         val smbClient = SMBClient()
         try {
             val smbConnection = smbClient.connect(config.endpoint.host, config.endpoint.port)
-            val password = config.credentialId?.let(credentialStore::get)?.password.orEmpty()
+            val password = password()
             val auth = if (config.username.isNullOrBlank()) {
                 AuthenticationContext.anonymous()
             } else {
                 AuthenticationContext(config.username, password.toCharArray(), null)
             }
             val smbSession = smbConnection.authenticate(auth)
-            val diskShare = smbSession.connectShare(shareName) as DiskShare
             client = smbClient
             connection = smbConnection
             session = smbSession
-            share = diskShare
+            configuredShare()?.let(::diskShare)
         } catch (error: Throwable) {
+            close()
             runCatching { smbClient.close() }
             throw mapFailure(error)
         }
@@ -63,33 +68,40 @@ class SmbFileSystem(
     override suspend fun list(path: RemotePath, page: PageRequest?): Page<RemoteEntry> =
         withContext(Dispatchers.IO) {
             ensureConnected()
-            val all = try {
-                share!!.list(normalize(path)).asSequence()
-                    .filterNot { it.fileName == "." || it.fileName == ".." }
-                    .map {
-                        RemoteEntry(
-                            name = it.fileName,
-                            path = path.child(it.fileName),
-                            isDirectory = it.fileAttributes and DIRECTORY_ATTRIBUTE != 0L,
-                            size = if (it.fileAttributes and DIRECTORY_ATTRIBUTE != 0L) null else it.endOfFile,
-                            modifiedAt = runCatching { Instant.ofEpochMilli(it.changeTime.toEpochMillis()) }.getOrNull(),
-                        )
+            try {
+                val location = SmbPathRouter.resolve(config.shareName, path)
+                val all = if (location == null) {
+                    shareDiscovery.discover(config, password()).map { name ->
+                        RemoteEntry(name, path.child(name), true, null, null)
                     }
-                    .sortedWith(compareByDescending<RemoteEntry> { it.isDirectory }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.name })
-                    .toList()
+                } else {
+                    diskShare(location.shareName).list(normalize(location.relativePath)).asSequence()
+                        .filterNot { it.fileName == "." || it.fileName == ".." }
+                        .map {
+                            val isDirectory = it.fileAttributes and DIRECTORY_ATTRIBUTE != 0L
+                            RemoteEntry(
+                                name = it.fileName,
+                                path = path.child(it.fileName),
+                                isDirectory = isDirectory,
+                                size = if (isDirectory) null else it.endOfFile,
+                                modifiedAt = runCatching { Instant.ofEpochMilli(it.changeTime.toEpochMillis()) }.getOrNull(),
+                            )
+                        }
+                        .sortedWith(compareByDescending<RemoteEntry> { it.isDirectory }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.name })
+                        .toList()
+                }
+                paginate(all, page)
             } catch (error: Throwable) {
                 throw mapFailure(error)
             }
-            val request = page ?: PageRequest(0, all.size.coerceAtLeast(1))
-            val items = all.drop(request.offset).take(request.limit)
-            val nextOffset = request.offset + items.size
-            Page(items, if (nextOffset < all.size) PageRequest(nextOffset, request.limit) else null)
         }
 
     override suspend fun stat(path: RemotePath): RemoteFileInfo = withContext(Dispatchers.IO) {
         ensureConnected()
+        val location = SmbPathRouter.resolve(config.shareName, path)
+            ?: throw SourceFailure.UnsupportedOperation()
         try {
-            val info = share!!.getFileInformation(normalize(path))
+            val info = diskShare(location.shareName).getFileInformation(normalize(location.relativePath))
             RemoteFileInfo(path, info.standardInformation.endOfFile, null)
         } catch (error: Throwable) {
             throw mapFailure(error)
@@ -98,9 +110,11 @@ class SmbFileSystem(
 
     override suspend fun open(path: RemotePath): RemoteReadHandle = withContext(Dispatchers.IO) {
         ensureConnected()
+        val location = SmbPathRouter.resolve(config.shareName, path)
+            ?: throw SourceFailure.UnsupportedOperation()
         try {
-            val file = share!!.openFile(
-                normalize(path),
+            val file = diskShare(location.shareName).openFile(
+                normalize(location.relativePath),
                 EnumSet.of(AccessMask.GENERIC_READ),
                 null,
                 EnumSet.of(SMB2ShareAccess.FILE_SHARE_READ),
@@ -114,26 +128,37 @@ class SmbFileSystem(
     }
 
     private suspend fun ensureConnected() {
-        if (share == null) connect()
+        if (session == null) connect()
+    }
+
+    private fun diskShare(name: String): DiskShare {
+        shares.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.let { return it.value }
+        val connected = session?.connectShare(name) as? DiskShare
+            ?: throw SourceFailure.ProtocolMismatch()
+        shares[name] = connected
+        return connected
     }
 
     override fun close() {
-        runCatching { share?.close() }
+        shares.values.forEach { share -> runCatching { share.close() } }
         runCatching { session?.close() }
         runCatching { connection?.close() }
         runCatching { client?.close() }
-        share = null
+        shares.clear()
         session = null
         connection = null
         client = null
     }
 
+    private fun password() = config.credentialId?.let(credentialStore::get)?.password.orEmpty()
+    private fun configuredShare() = config.shareName?.trim()?.takeIf(String::isNotEmpty)
     private fun normalize(path: RemotePath) = path.value.trim('/').replace('/', '\\')
 
     private fun mapFailure(error: Throwable): SourceFailure {
+        if (error is SourceFailure) return error
         val message = error.message.orEmpty().lowercase()
         return when {
-            "logon" in message || "authentication" in message -> SourceFailure.AuthenticationRejected(error)
+            "logon" in message || "authentication" in message || "credentials" in message -> SourceFailure.AuthenticationRejected(error)
             "access denied" in message -> SourceFailure.PermissionDenied(error)
             "not found" in message || "no such file" in message -> SourceFailure.NotFound(error)
             "timeout" in message -> SourceFailure.Timeout(error)
@@ -143,6 +168,61 @@ class SmbFileSystem(
     }
 
     companion object { private const val DIRECTORY_ATTRIBUTE: Long = 16 }
+}
+
+internal data class SmbLocation(val shareName: String, val relativePath: RemotePath)
+
+internal object SmbPathRouter {
+    fun resolve(configuredShare: String?, path: RemotePath): SmbLocation? {
+        val fixedShare = configuredShare?.trim()?.trim('/', '\\')?.takeIf(String::isNotEmpty)
+        val normalized = path.value.trim('/').replace('\\', '/')
+        if (fixedShare != null) return SmbLocation(fixedShare, RemotePath(normalized))
+        if (normalized.isEmpty()) return null
+        return SmbLocation(
+            shareName = normalized.substringBefore('/'),
+            relativePath = RemotePath(normalized.substringAfter('/', "")),
+        )
+    }
+}
+
+fun interface SmbShareDiscovery {
+    fun discover(config: MediaSourceConfig, password: String): List<String>
+}
+
+private class JcifsSmbShareDiscovery : SmbShareDiscovery {
+    override fun discover(config: MediaSourceConfig, password: String): List<String> {
+        val properties = Properties().apply {
+            setProperty("jcifs.smb.client.minVersion", "SMB202")
+            setProperty("jcifs.smb.client.maxVersion", "SMB311")
+        }
+        val baseContext = BaseContext(PropertyConfiguration(properties))
+        val context = if (config.username.isNullOrBlank()) {
+            baseContext.withAnonymousCredentials()
+        } else {
+            baseContext.withCredentials(NtlmPasswordAuthenticator("", config.username, password))
+        }
+        val root = SmbFile("smb://${config.endpoint.host}:${config.endpoint.port}/", context)
+        return try {
+            root.listFiles().asSequence()
+                .filter { it.type == SmbConstants.TYPE_SHARE }
+                .map { it.name.trimEnd('/') }
+                .filter { it.isNotBlank() && !it.endsWith('$') }
+                .distinctBy { it.lowercase() }
+                .sortedWith(String.CASE_INSENSITIVE_ORDER)
+                .toList()
+        } finally {
+            runCatching { root.close() }
+            runCatching { context.close() }
+            if (context !== baseContext) runCatching { baseContext.close() }
+        }
+    }
+}
+
+internal fun paginate(entries: List<RemoteEntry>, page: PageRequest?): Page<RemoteEntry> {
+    val request = page ?: PageRequest(0, entries.size.coerceAtLeast(1))
+    val items = entries.drop(request.offset).take(request.limit)
+    val nextOffset = request.offset + items.size
+    return Page(items, if (nextOffset < entries.size) PageRequest(nextOffset, request.limit) else null)
 }
 
 private class SmbReadHandle(

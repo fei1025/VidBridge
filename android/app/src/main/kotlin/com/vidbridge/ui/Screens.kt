@@ -120,7 +120,10 @@ private fun SourceCard(
     var menu by remember { mutableStateOf(false) }
     val location = when (source.type) {
         MediaSourceType.LOCAL -> source.rootUri.orEmpty()
-        MediaSourceType.SMB -> "${source.endpoint.host}:${source.endpoint.port}/${source.shareName.orEmpty()}"
+        MediaSourceType.SMB -> listOfNotNull(
+            "${source.endpoint.host}:${source.endpoint.port}",
+            source.shareName?.takeIf { it.isNotBlank() },
+        ).joinToString("/")
         MediaSourceType.WEBDAV -> "${source.endpoint.scheme}://${source.endpoint.host}:${source.endpoint.port}/${source.rootPath}"
         else -> "${source.endpoint.host}:${source.endpoint.port}"
     }
@@ -241,11 +244,19 @@ fun AddSourceScreen(container: AppContainer, sourceId: String? = null, onBack: (
                 }
                 item { FormField("端口", draft.port, KeyboardType.Number) { vm.update { d -> d.copy(port = it) } } }
                 if (draft.type == MediaSourceType.SMB) {
-                    item { FormField("共享名称", draft.shareName) { vm.update { d -> d.copy(shareName = it) } } }
+                    item {
+                        FormField("共享名称（可选，留空自动发现）", draft.shareName) {
+                            vm.update { d -> d.copy(shareName = it) }
+                        }
+                    }
                 }
                 item {
                     FormField(
-                        if (draft.type == MediaSourceType.WEBDAV) "WebDAV 根路径（可选）" else "初始目录（可选）",
+                        when {
+                            draft.type == MediaSourceType.WEBDAV -> "WebDAV 根路径（可选）"
+                            draft.shareName.isBlank() -> "初始路径（可选，首段为共享名）"
+                            else -> "共享内初始目录（可选）"
+                        },
                         draft.rootPath,
                     ) { vm.update { d -> d.copy(rootPath = it) } }
                 }

@@ -69,6 +69,7 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.7.1")
     implementation("androidx.media3:media3-session:1.7.1")
     implementation("com.hierynomus:smbj:0.13.0")
+    implementation("org.codelibs:jcifs:2.1.40")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
