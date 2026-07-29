@@ -86,8 +86,14 @@ sealed class SourceFailure(message: String, cause: Throwable? = null) : Exceptio
     class Timeout(cause: Throwable? = null) : SourceFailure("连接超时", cause)
     class PermissionDenied(cause: Throwable? = null) : SourceFailure("没有访问权限", cause)
     class CertificateRejected(cause: Throwable? = null) : SourceFailure("服务器证书不受信任", cause)
+    class InsecureTransport : SourceFailure("为保护凭据，WebDAV 必须使用 HTTPS")
+    class InsecurePublicHttp : SourceFailure("HTTP 媒体来源只允许使用局域网地址")
     class NotFound(cause: Throwable? = null) : SourceFailure("文件或目录不存在", cause)
     class UnsupportedOperation : SourceFailure("当前来源不支持此操作")
     class ProtocolMismatch(cause: Throwable? = null) : SourceFailure("协议不匹配", cause)
     class Unknown(cause: Throwable) : SourceFailure("未知错误", cause)
 }
+
+/** Converts protocol failures to text safe for UI, persistence and diagnostics. */
+fun Throwable.safeUserMessage(fallback: String): String =
+    (this as? SourceFailure)?.message?.takeIf { it.isNotBlank() } ?: fallback

@@ -130,11 +130,12 @@ private class LocalReadHandle(
     override val seekable = true
 
     override suspend fun readAt(offset: Long, length: Int): ByteArray = withContext(Dispatchers.IO) {
-        require(offset >= 0 && length >= 0)
-        mutex.withLock {
-            check(!closed) { "读取句柄已关闭" }
-            if (length == 0 || (size != null && offset >= size!!)) return@withLock ByteArray(0)
-            val requested = size?.let { minOf(length.toLong(), it - offset).toInt() } ?: length
+            require(offset >= 0 && length >= 0)
+            mutex.withLock {
+                check(!closed) { "读取句柄已关闭" }
+            val knownSize = size
+            if (length == 0 || (knownSize != null && offset >= knownSize)) return@withLock ByteArray(0)
+            val requested = knownSize?.let { minOf(length.toLong(), it - offset).toInt() } ?: length
             val buffer = ByteBuffer.allocate(requested)
             val count = channel.read(buffer, offset)
             if (count <= 0) ByteArray(0) else buffer.array().copyOf(count)
@@ -143,7 +144,8 @@ private class LocalReadHandle(
 
     override fun stream(startOffset: Long): Flow<ByteArray> = flow {
         var offset = startOffset
-        while (!closed && (size == null || offset < size!!)) {
+        val knownSize = size
+        while (!closed && (knownSize == null || offset < knownSize)) {
             val bytes = readAt(offset, CHUNK_SIZE)
             if (bytes.isEmpty()) break
             emit(bytes)

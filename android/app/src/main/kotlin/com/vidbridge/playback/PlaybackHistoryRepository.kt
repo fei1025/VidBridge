@@ -8,6 +8,12 @@ import java.security.MessageDigest
 class PlaybackHistoryRepository(private val dao: PlaybackHistoryDao) {
     suspend fun get(sourceId: String, path: String): PlaybackHistoryEntity? = dao.get(key(sourceId, path))
 
+    suspend fun deleteForSource(sourceId: String) = dao.deleteForSource(sourceId)
+
+    suspend fun clear(sourceId: String, path: String) = dao.delete(key(sourceId, path))
+
+    suspend fun clearAll() = dao.clearAll()
+
     suspend fun save(
         sourceId: String,
         path: String,

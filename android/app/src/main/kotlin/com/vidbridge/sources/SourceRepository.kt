@@ -24,7 +24,7 @@ class SourceRepository(
         val previous = dao.get(config.id)
         val credentialId = when {
             !password.isNullOrEmpty() -> credentials.put(password, config.credentialId)
-            config.credentialId != null -> config.credentialId
+            config.type != com.vidbridge.protocol.api.MediaSourceType.LOCAL && config.username != null -> config.credentialId
             else -> null
         }
         dao.upsert(config.copy(credentialId = credentialId).toEntity())

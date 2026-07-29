@@ -4,6 +4,7 @@ import android.util.Xml
 import com.vidbridge.core.security.CredentialStore
 import com.vidbridge.protocol.api.*
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.*
@@ -34,10 +35,12 @@ class WebDavFileSystem(
     )
 
     override suspend fun connect() {
+        checkTls()
         propfind(RemotePath(config.rootPath), depth = 0, directory = true).close()
     }
 
     override suspend fun list(path: RemotePath, page: PageRequest?): Page<RemoteEntry> {
+        checkTls()
         val requestUrl = url(path, directory = true)
         val resources = propfind(path, depth = 1, directory = true).use { response ->
             parseMultiStatus(response.body?.string().orEmpty())
@@ -66,6 +69,7 @@ class WebDavFileSystem(
     }
 
     override suspend fun stat(path: RemotePath): RemoteFileInfo {
+        checkTls()
         val resource = propfind(path, depth = 0, directory = false).use { response ->
             parseMultiStatus(response.body?.string().orEmpty()).firstOrNull()
                 ?: throw SourceFailure.NotFound()
@@ -74,11 +78,16 @@ class WebDavFileSystem(
     }
 
     override suspend fun open(path: RemotePath): RemoteReadHandle {
+        checkTls()
         val info = stat(path)
         return WebDavReadHandle(url(path, directory = false), info.size, headers(), client)
     }
 
     override fun close() = Unit
+
+    private fun checkTls() {
+        if (!config.endpoint.tls) throw SourceFailure.InsecureTransport()
+    }
 
     private suspend fun propfind(path: RemotePath, depth: Int, directory: Boolean): Response {
         val body = PROPFIND_BODY.toRequestBody(XML)
@@ -159,6 +168,21 @@ private class WebDavReadHandle(
         require(offset >= 0 && length >= 0)
         if (length == 0 || (size != null && offset >= size)) return ByteArray(0)
         val end = size?.let { minOf(offset + length - 1, it - 1) } ?: (offset + length - 1)
+        var lastTransient: SourceFailure? = null
+        repeat(MAX_READ_ATTEMPTS) { attempt ->
+            try {
+                return readOnce(offset, end, length)
+            } catch (error: SourceFailure.Timeout) {
+                lastTransient = error
+            } catch (error: SourceFailure.HostUnreachable) {
+                lastTransient = error
+            }
+            if (attempt + 1 < MAX_READ_ATTEMPTS) delay(READ_RETRY_DELAY_MS * (attempt + 1))
+        }
+        throw (lastTransient ?: SourceFailure.Timeout())
+    }
+
+    private suspend fun readOnce(offset: Long, end: Long, length: Int): ByteArray {
         val request = Request.Builder()
             .url(url)
             .headers(headers)
@@ -186,6 +210,8 @@ private class WebDavReadHandle(
                 it.code == 401 -> throw SourceFailure.AuthenticationRejected()
                 it.code == 403 -> throw SourceFailure.PermissionDenied()
                 it.code == 404 || it.code == 416 -> return ByteArray(0)
+                it.code == 408 || it.code == 429 || it.code == 500 || it.code == 502 || it.code == 503 || it.code == 504 ->
+                    throw SourceFailure.Timeout()
                 else -> throw SourceFailure.ProtocolMismatch(
                     IllegalStateException("Range 请求返回 HTTP ${it.code}"),
                 )
@@ -225,7 +251,11 @@ private class WebDavReadHandle(
         return output.toByteArray()
     }
 
-    private companion object { const val CHUNK_SIZE = 1024 * 1024 }
+    private companion object {
+        const val CHUNK_SIZE = 1024 * 1024
+        const val MAX_READ_ATTEMPTS = 3
+        const val READ_RETRY_DELAY_MS = 250L
+    }
 }
 
 private data class DavResource(

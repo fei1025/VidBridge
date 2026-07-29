@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="12dp"
+    android:background="#DE171717">
+
+    <TextView
+        android:id="@+id/widget_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:text="VidBridge"
+        android:textColor="#FFFFFFFF"
+        android:textSize="15sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/widget_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="已暂停"
+        android:textColor="#FFBDBDBD"
+        android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/widget_progress"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="00:00 / 00:00"
+        android:textColor="#FFBDBDBD"
+        android:textSize="11sp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <ImageButton
+            android:id="@+id/widget_open"
+            android:layout_width="40dp"
+            android:layout_height="36dp"
+            android:background="@android:color/transparent"
+            android:contentDescription="打开 VidBridge"
+            android:src="@android:drawable/ic_menu_view" />
+
+        <ImageButton
+            android:id="@+id/widget_play_pause"
+            android:layout_width="40dp"
+            android:layout_height="36dp"
+            android:background="@android:color/transparent"
+            android:contentDescription="播放或暂停"
+            android:src="@android:drawable/ic_media_play" />
+
+        <ImageButton
+            android:id="@+id/widget_stop"
+            android:layout_width="40dp"
+            android:layout_height="36dp"
+            android:background="@android:color/transparent"
+            android:contentDescription="停止播放"
+            android:src="@android:drawable/ic_menu_close_clear_cancel" />
+    </LinearLayout>
+</LinearLayout>

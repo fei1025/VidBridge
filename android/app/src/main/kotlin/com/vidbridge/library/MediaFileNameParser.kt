@@ -72,6 +72,9 @@ object MediaIdentity {
     fun mediaKey(sourceId: String, path: String, size: Long?, modifiedAtEpochMs: Long?): String =
         entryKey(sourceId, path, false, size, modifiedAtEpochMs)
 
+    fun groupKey(sourceId: String, title: String, kind: MediaKind): String =
+        sha256("$sourceId\u0000${kind.name}\u0000${title.trim().lowercase()}")
+
     fun entryKey(sourceId: String, path: String, isDirectory: Boolean, size: Long?, modifiedAtEpochMs: Long?): String =
         if (isDirectory) sha256("$sourceId\u0000$path\u0000directory")
         else sha256("$sourceId\u0000$path\u0000${size ?: -1}\u0000${modifiedAtEpochMs ?: -1}")

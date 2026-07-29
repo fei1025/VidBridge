@@ -46,8 +46,8 @@
 | 设置 | DataStore | 用户偏好和播放器默认设置 |
 | 后台任务 | WorkManager | 媒体扫描、增量同步、元数据刷新 |
 | 图片 | Coil | 海报、背景和本地图片缓存 |
-| 播放生命周期 | AndroidX Media3 Session | MediaSession、通知、耳机、遥控器、后台控制 |
-| 播放引擎 | 可替换的 PlayerEngine | 第一阶段真机比较 Media3 ExoPlayer 与 libVLC |
+| 播放生命周期 | PlaybackService + Android MediaSession | 后台播放、通知、锁屏控制、音频焦点和视频 Surface 绑定 |
+| 播放引擎 | libVLC | 统一承载本地、SMB 与 WebDAV 播放，按需随机读取 |
 | 依赖注入 | Hilt 或显式构造注入 | 核心接口不依赖具体框架 |
 | 凭据 | Android Keystore 支持的加密存储 | Room 中只保存 credentialId |
 | 性能验证 | Macrobenchmark + Baseline Profile | 必须用 Release 构建评估 Compose 和播放性能 |
@@ -252,9 +252,9 @@ interface RemoteReadHandle : AutoCloseable {
 | Local | 是 | 是 | Storage Access Framework 权限 | 支持 |
 | SMB 2/3 | 是 | 是 | NAS/Windows 最常见，认证与重连复杂 | 首发 |
 | WebDAV | 是 | 依赖 HTTP Range | 易通过 HTTPS 跨网络访问 | 第二个协议 |
-| NFS | 是 | 是 | NAS 常见，但 Android 库和权限需验证 | 后续 |
-| SFTP | 是 | 是 | 安全，吞吐和 Seek 实现需实测 | 后续 |
-| DLNA/UPnP | 有限 | 依赖资源 URL | 发现方便，模型不等同文件系统 | 后续 |
+| NFSv3 | 是 | 是 | AUTH_SYS 只读首版，依赖服务器导出和端口映射 | 已接入首版 |
+| SFTP | 是 | 是 | SSH 认证，支持远端 offset Seek；主机指纹策略需发布前完善 | 已接入首版 |
+| DLNA/UPnP | 有限 | 依赖资源 URL | SSDP + ContentDirectory SOAP；只读，模型不等同文件系统 | 已接入首版 |
 | Jellyfin/Emby/Plex | API | 服务器决定 | 自带元数据、播放进度和转码 | 独立适配 |
 
 ## 8. 播放源解析
@@ -324,11 +324,12 @@ interface PlayerEngine {
 
 界面只依赖 `PlayerEngine` 或 Media3 `MediaController`。不在 Composable 中直接创建协议连接、libVLC 实例或数据库事务。
 
-### 9.2 Media3 与 libVLC 的角色
+### 9.2 libVLC 的角色
 
-- Media3 Session：负责 Android 系统集成、播放命令、队列、通知、后台服务、耳机和 TV 遥控器。
-- ExoPlayer：优先验证 Android 硬件解码、标准容器、Surface、字幕和 Media3 原生集成。
-- libVLC：验证更广泛容器/编码、复杂字幕、SMB 兼容性和特殊媒体文件。
+- libVLC：负责本地、SMB、NFSv3、WebDAV、SFTP 及媒体服务器播放入口的统一播放、随机读取、Seek、缓冲、容器/编码和字幕能力。
+- PlaybackService：负责 libVLC 实例、后台播放、系统 MediaSession、通知、音频焦点和耳机断开暂停。
+- Android Activity：负责 Compose 控制层、视频 Surface 绑定、PiP 和播放页面进度展示；不持有播放器实例。
+- Android TV 遥控器适配已接入播放器焦点和 D-pad 控制，不再引入 Media3 作为播放器依赖。
 - 如果使用 libVLC 作为主引擎，应通过适配层接入 Media3，而不是绕过 MediaSession。
 
 最终选择必须以真机样本矩阵为依据，不能只比较 API 数量。
@@ -338,7 +339,7 @@ interface PlayerEngine {
 - 普通页面、播放器控制层和应用内 Mini Player 使用 Compose。
 - 视频画面使用 Media3 `PlayerSurface`，或通过互操作层连接 libVLC Surface。
 - 系统小窗口使用 Android Picture-in-Picture，不自行模拟悬浮窗。
-- 桌面组件使用 Jetpack Glance，提供封面、标题、播放/暂停和下一集；桌面组件不能承载视频 Surface。
+- 桌面组件使用原生 AppWidget/RemoteViews，提供标题、进度、播放/暂停、停止和打开应用；桌面组件不能承载视频 Surface。
 - Android TV 使用独立的 TV 导航和焦点组件，共享领域层、协议层、数据库和播放器服务。
 
 ## 10. 媒体库与扫描
@@ -461,11 +462,11 @@ sealed interface SourceFailure {
 
 ## 15. 实施阶段
 
-### 阶段 0：播放引擎技术验证
+### 阶段 0：播放引擎技术验证（已确定 libVLC）
 
 - 创建最小 Kotlin + Compose 项目。
-- 接入 Media3 Session 和视频 Surface。
-- 分别验证 ExoPlayer 与 libVLC。
+- 接入 libVLC 和视频 Surface。
+- 确定 libVLC 作为唯一主播放器。
 - 用本地文件和 HTTP Range 完成格式、Seek、字幕、音轨、PiP 测试。
 - 确定主播放器与备用策略。
 
@@ -492,12 +493,12 @@ sealed interface SourceFailure {
 ### 阶段 4：Android 平台体验
 
 - MediaSessionService、通知、耳机和音频焦点。
-- PiP、应用内 Mini Player、桌面 Glance 组件。
+- PiP、应用内 Mini Player、桌面 AppWidget 控制组件。
 - 平板自适应布局和播放器手势。
 
 ### 阶段 5：更多来源与 TV
 
-- 按真实需求增加 NFS、SFTP、DLNA。
+- 按真实需求增加 NFSv4，并补充 NFSv3/SFTP/DLNA 的真实设备矩阵验收。
 - Jellyfin/Emby/Plex 使用独立媒体服务器接口。
 - Android TV Compose、遥控器焦点和刷新率匹配。
 

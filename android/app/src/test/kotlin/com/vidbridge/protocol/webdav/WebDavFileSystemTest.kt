@@ -8,6 +8,8 @@ import okhttp3.Credentials as HttpCredentials
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.tls.HandshakeCertificates
+import okhttp3.tls.HeldCertificate
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -17,12 +19,24 @@ import java.time.Instant
 class WebDavFileSystemTest {
     private lateinit var server: MockWebServer
     private lateinit var credentials: FakeCredentialStore
+    private lateinit var certificates: HandshakeCertificates
+    private lateinit var client: OkHttpClient
 
     @Before
     fun setUp() {
         server = MockWebServer()
+        val certificate = HeldCertificate.Builder().addSubjectAlternativeName("localhost").build()
+        certificates = HandshakeCertificates.Builder()
+            .heldCertificate(certificate)
+            .addTrustedCertificate(certificate.certificate)
+            .build()
+        server.useHttps(certificates.sslSocketFactory(), false)
         server.start()
         credentials = FakeCredentialStore(mapOf("credential" to "secret"))
+        client = OkHttpClient.Builder()
+            .sslSocketFactory(certificates.sslSocketFactory(), certificates.trustManager)
+            .hostnameVerifier { _, _ -> true }
+            .build()
     }
 
     @After
@@ -38,7 +52,7 @@ class WebDavFileSystemTest {
             response("/dav/Videos/%E7%94%B5%E5%BD%B1%20A.mkv", "电影 A.mkv", length = 5_368_709_120),
         )))
 
-        WebDavFileSystem(config(), credentials, OkHttpClient()).use { fs ->
+        WebDavFileSystem(config(), credentials, client).use { fs ->
             val page = fs.list(RemotePath("dav/Videos"))
 
             assertEquals(2, page.items.size)
@@ -70,7 +84,7 @@ class WebDavFileSystemTest {
                 .setBody("3456"),
         )
 
-        WebDavFileSystem(config(), credentials, OkHttpClient()).use { fs ->
+        WebDavFileSystem(config(), credentials, client).use { fs ->
             fs.open(RemotePath("dav/Videos/movie.mkv")).use { handle ->
                 assertEquals(10L, handle.size)
                 assertArrayEquals("3456".toByteArray(), handle.readAt(3, 4))
@@ -91,7 +105,7 @@ class WebDavFileSystemTest {
         )))
         server.enqueue(MockResponse().setResponseCode(200).setBody("0123456789"))
 
-        WebDavFileSystem(config(), credentials, OkHttpClient()).use { fs ->
+        WebDavFileSystem(config(), credentials, client).use { fs ->
             fs.open(RemotePath("dav/Videos/movie.mkv")).use { handle ->
                 assertThrows(SourceFailure.ProtocolMismatch::class.java) {
                     kotlinx.coroutines.runBlocking { handle.readAt(3, 4) }
@@ -101,9 +115,43 @@ class WebDavFileSystemTest {
     }
 
     @Test
+    fun transientRangeFailureRetriesWithTheSameRange() = runTest {
+        server.enqueue(MockResponse().setResponseCode(207).setBody(multistatus(
+            response("/dav/Videos/movie.mkv", "movie.mkv", length = 10),
+        )))
+        server.enqueue(MockResponse().setResponseCode(503))
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(206)
+                .setHeader("Content-Range", "bytes 3-6/10")
+                .setBody("3456"),
+        )
+
+        WebDavFileSystem(config(), credentials, client).use { fs ->
+            fs.open(RemotePath("dav/Videos/movie.mkv")).use { handle ->
+                assertArrayEquals("3456".toByteArray(), handle.readAt(3, 4))
+            }
+        }
+
+        assertEquals("PROPFIND", server.takeRequest().method)
+        assertEquals("bytes=3-6", server.takeRequest().getHeader("Range"))
+        assertEquals("bytes=3-6", server.takeRequest().getHeader("Range"))
+    }
+
+    @Test
     fun missingCredentialFailsBeforeNetworkRequest() = runTest {
-        val fs = WebDavFileSystem(config(), FakeCredentialStore(emptyMap()), OkHttpClient())
+        val fs = WebDavFileSystem(config(), FakeCredentialStore(emptyMap()), client)
         assertThrows(SourceFailure.AuthenticationRequired::class.java) {
+            kotlinx.coroutines.runBlocking { fs.connect() }
+        }
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun cleartextWebDavIsRejectedBeforeNetworkRequest() = runTest {
+        val insecure = config().copy(endpoint = config().endpoint.copy(scheme = "http", tls = false))
+        val fs = WebDavFileSystem(insecure, credentials, client)
+        assertThrows(SourceFailure.InsecureTransport::class.java) {
             kotlinx.coroutines.runBlocking { fs.connect() }
         }
         assertEquals(0, server.requestCount)
@@ -113,7 +161,7 @@ class WebDavFileSystemTest {
         id = "webdav",
         displayName = "WebDAV",
         type = MediaSourceType.WEBDAV,
-        endpoint = Endpoint("http", server.hostName, server.port, tls = false),
+        endpoint = Endpoint("https", server.hostName, server.port, tls = true),
         rootPath = "dav/Videos",
         shareName = null,
         username = "alice",

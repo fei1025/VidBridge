@@ -36,6 +36,61 @@ class DatabaseMigrationTest {
         ).close()
     }
 
+    @Test
+    fun migrate3To4AddsMediaGroupingColumns() {
+        helper.createDatabase(DATABASE_NAME + "-v3", 3).close()
+        helper.runMigrationsAndValidate(
+            DATABASE_NAME + "-v3",
+            4,
+            true,
+            VidBridgeDatabase.MIGRATION_3_4,
+        ).close()
+    }
+
+    @Test
+    fun migrate4To5AddsPlaylists() {
+        helper.createDatabase(DATABASE_NAME + "-v4", 4).close()
+        helper.runMigrationsAndValidate(
+            DATABASE_NAME + "-v4",
+            5,
+            true,
+            VidBridgeDatabase.MIGRATION_4_5,
+        ).close()
+    }
+
+    @Test
+    fun migrate5To6AddsDownloads() {
+        helper.createDatabase(DATABASE_NAME + "-v5", 5).close()
+        helper.runMigrationsAndValidate(
+            DATABASE_NAME + "-v5",
+            6,
+            true,
+            VidBridgeDatabase.MIGRATION_5_6,
+        ).close()
+    }
+
+    @Test
+    fun migrate6To7AddsCreditsMetadata() {
+        helper.createDatabase(DATABASE_NAME + "-v6", 6).close()
+        helper.runMigrationsAndValidate(
+            DATABASE_NAME + "-v6",
+            7,
+            true,
+            VidBridgeDatabase.MIGRATION_6_7,
+        ).close()
+    }
+
+    @Test
+    fun migrate7To8AddsPlaybackIndexes() {
+        helper.createDatabase(DATABASE_NAME + "-v7", 7).close()
+        helper.runMigrationsAndValidate(
+            DATABASE_NAME + "-v7",
+            8,
+            true,
+            VidBridgeDatabase.MIGRATION_7_8,
+        ).close()
+    }
+
     private companion object {
         const val DATABASE_NAME = "migration-test"
     }

@@ -16,6 +16,7 @@ import com.vidbridge.protocol.api.RemoteEntry
 import com.vidbridge.protocol.api.RemoteFileSystem
 import com.vidbridge.protocol.api.RemotePath
 import com.vidbridge.protocol.api.SourceFailure
+import com.vidbridge.protocol.api.safeUserMessage
 import java.util.ArrayDeque
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
@@ -70,13 +71,16 @@ class MediaScanWorker(
         val fileSystem = try {
             container.fileSystems.create(sourceId)
         } catch (error: Throwable) {
-            saveStatus(STATUS_FAILED, error.message)
-            return Result.failure(workDataOf(ERROR_MESSAGE to (error.message ?: "无法创建来源连接")))
+            val safeMessage = error.safeUserMessage("无法创建来源连接")
+            saveStatus(STATUS_FAILED, safeMessage)
+            return Result.failure(workDataOf(ERROR_MESSAGE to safeMessage))
         }
 
         try {
             fileSystem.connect()
             val showHidden = container.settings.preferences.first().showHiddenFiles
+            val existingEntries = library.getEntries(sourceId).associateBy { it.path }
+            val existingMedia = library.getMediaItems(sourceId).associateBy { it.path }
             var resumedPath = currentPath
             val nfoCache = mutableMapOf<String, LocalMetadata?>()
 
@@ -96,10 +100,26 @@ class MediaScanWorker(
                     val page = fileSystem.list(directory, pageRequest)
                     val visible = page.items.filter { showHidden || !ScanRules.isHidden(it.name) }
                     val now = System.currentTimeMillis()
-                    val indexed = visible.map { it.toIndex(sourceId, token) }
+                    val indexed = visible.map { entry ->
+                        val current = entry.toIndex(sourceId, token)
+                        existingEntries[entry.path.value]
+                            ?.takeIf { it.fingerprint == current.fingerprint }
+                            ?.copy(scanToken = token)
+                            ?: current
+                    }
                     val videoEntries = visible.filter { !it.isDirectory && MediaFormats.isVideo(it.name) }
-                    val media = videoEntries.map { it.toMedia(sourceId, token, now) }
-                    val versions = media.map {
+                    val changedVideoPaths = videoEntries.asSequence()
+                        .filter { entry ->
+                            val current = entry.toIndex(sourceId, token)
+                            existingEntries[entry.path.value]?.fingerprint != current.fingerprint || existingMedia[entry.path.value] == null
+                        }
+                        .map { it.path.value }
+                        .toSet()
+                    val media = videoEntries.map { entry ->
+                        val old = existingMedia[entry.path.value]
+                        if (entry.path.value !in changedVideoPaths && old != null) old.copy(scanToken = token) else entry.toMedia(sourceId, token, now)
+                    }
+                    val versions = media.filter { it.path in changedVideoPaths }.map {
                         val parsed = MediaFileNameParser.parse(it.fileName)
                         MediaVersionEntity(
                             versionKey = it.mediaKey,
@@ -128,19 +148,33 @@ class MediaScanWorker(
                             plot = local.plot,
                             year = local.year,
                             rating = local.rating,
+                            director = local.director,
+                            castMembers = local.castMembers.joinToString("\n").ifBlank { null },
                             updatedAtEpochMs = now,
                         )
                     }
                     val images = visible.filter { !it.isDirectory && isArtwork(it.name) }
-                    val artwork = media.mapNotNull { item ->
-                        val image = matchingArtwork(item.fileName, images) ?: return@mapNotNull null
-                        ArtworkEntity(
-                            artworkKey = "${item.mediaKey}:poster",
-                            mediaKey = item.mediaKey,
-                            kind = "POSTER",
-                            remotePath = image.path.value,
-                            updatedAtEpochMs = now,
-                        )
+                    val artwork = media.flatMap { item ->
+                        buildList {
+                            matchingArtwork(item.fileName, images)?.let { image ->
+                                add(ArtworkEntity(
+                                    artworkKey = "${item.mediaKey}:poster",
+                                    mediaKey = item.mediaKey,
+                                    kind = "POSTER",
+                                    remotePath = image.path.value,
+                                    updatedAtEpochMs = now,
+                                ))
+                            }
+                            matchingBackdrop(item.fileName, images)?.let { image ->
+                                add(ArtworkEntity(
+                                    artworkKey = "${item.mediaKey}:backdrop",
+                                    mediaKey = item.mediaKey,
+                                    kind = "BACKDROP",
+                                    remotePath = image.path.value,
+                                    updatedAtEpochMs = now,
+                                ))
+                            }
+                        }
                     }
                     library.persistScanBatch(indexed, media, versions, metadata, artwork)
                     visible.filter { it.isDirectory && !ScanRules.isExcludedDirectory(it.name) }
@@ -167,11 +201,11 @@ class MediaScanWorker(
         } catch (error: Throwable) {
             val retryable = error is SourceFailure.Timeout || error is SourceFailure.HostUnreachable
             val willRetry = retryable && runAttemptCount < MAX_RETRIES
-            saveStatus(if (willRetry) STATUS_RETRYING else STATUS_FAILED, error.message)
+            saveStatus(if (willRetry) STATUS_RETRYING else STATUS_FAILED, error.safeUserMessage("扫描失败"))
             return if (willRetry) {
                 Result.retry()
             } else {
-                Result.failure(workDataOf(ERROR_MESSAGE to (error.message ?: "扫描失败")))
+                Result.failure(workDataOf(ERROR_MESSAGE to error.safeUserMessage("扫描失败")))
             }
         } finally {
             fileSystem.close()
@@ -239,6 +273,15 @@ private fun matchingArtwork(videoName: String, entries: List<RemoteEntry>): Remo
     }
 }
 
+private fun matchingBackdrop(videoName: String, entries: List<RemoteEntry>): RemoteEntry? {
+    val stem = videoName.substringBeforeLast('.').lowercase()
+    return entries.firstOrNull {
+        val imageStem = it.name.substringBeforeLast('.').lowercase()
+        imageStem == "$stem-backdrop" || imageStem == "$stem-fanart" ||
+            imageStem in setOf("backdrop", "fanart", "background")
+    }
+}
+
 private const val MAX_NFO_BYTES = 512 * 1024
 private fun RemoteEntry.toIndex(sourceId: String, scanToken: String) = RemoteEntryIndexEntity(
     sourceId = sourceId,
@@ -254,6 +297,7 @@ private fun RemoteEntry.toIndex(sourceId: String, scanToken: String) = RemoteEnt
 private fun RemoteEntry.toMedia(sourceId: String, scanToken: String, createdAt: Long): MediaItemEntity {
     val modified = modifiedAt?.toEpochMilli()
     val parsed = MediaFileNameParser.parse(name)
+    val groupTitle = parsed.title.substringBefore(" · ").ifBlank { parsed.title }
     return MediaItemEntity(
         mediaKey = MediaIdentity.mediaKey(sourceId, path.value, size, modified),
         sourceId = sourceId,
@@ -261,6 +305,8 @@ private fun RemoteEntry.toMedia(sourceId: String, scanToken: String, createdAt: 
         title = parsed.title,
         fileName = name,
         kind = parsed.kind.name,
+        groupKey = MediaIdentity.groupKey(sourceId, groupTitle, parsed.kind),
+        groupTitle = groupTitle,
         season = parsed.season,
         episode = parsed.episode,
         size = size,

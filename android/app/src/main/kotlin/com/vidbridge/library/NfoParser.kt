@@ -10,6 +10,8 @@ data class LocalMetadata(
     val plot: String? = null,
     val year: Int? = null,
     val rating: Float? = null,
+    val director: String? = null,
+    val castMembers: List<String> = emptyList(),
 )
 
 object NfoParser {
@@ -26,6 +28,9 @@ object NfoParser {
             var plot: String? = null
             var year: Int? = null
             var rating: Float? = null
+            var director: String? = null
+            val castMembers = linkedSetOf<String>()
+            var insideActor = false
             while (parser.eventType != XmlPullParser.END_DOCUMENT) {
                 if (parser.eventType == XmlPullParser.START_TAG) {
                     when (parser.name.lowercase()) {
@@ -34,12 +39,17 @@ object NfoParser {
                         "plot", "outline" -> if (plot == null) plot = parser.nextText().trim().ifBlank { null }
                         "year" -> year = parser.nextText().trim().toIntOrNull()
                         "rating" -> rating = parser.nextText().trim().toFloatOrNull()
+                        "director" -> director = parser.nextText().trim().ifBlank { null }
+                        "actor" -> insideActor = true
+                        "name" -> if (insideActor) parser.nextText().trim().takeIf { it.isNotBlank() }?.let(castMembers::add)
                     }
+                } else if (parser.eventType == XmlPullParser.END_TAG && parser.name.equals("actor", true)) {
+                    insideActor = false
                 }
                 parser.next()
             }
-            LocalMetadata(title, originalTitle, plot, year, rating)
-                .takeIf { it.title != null || it.plot != null || it.year != null }
+            LocalMetadata(title, originalTitle, plot, year, rating, director, castMembers.toList())
+                .takeIf { it.title != null || it.plot != null || it.year != null || it.director != null || it.castMembers.isNotEmpty() }
         }.getOrNull()
     }
 }

@@ -12,7 +12,6 @@ import com.hierynomus.smbj.session.Session
 import com.hierynomus.smbj.share.DiskShare
 import com.vidbridge.core.security.CredentialStore
 import com.vidbridge.protocol.api.*
-import jcifs.SmbConstants
 import jcifs.config.PropertyConfiguration
 import jcifs.context.BaseContext
 import jcifs.smb.NtlmPasswordAuthenticator
@@ -153,7 +152,7 @@ class SmbFileSystem(
 
     private fun mapFailure(error: Throwable): SourceFailure {
         if (error is SourceFailure) return error
-        Log.e(LOG_TAG, "SMB operation failed (${error.javaClass.name}): ${error.message}", error)
+        Log.e(LOG_TAG, "SMB operation failed (${error.javaClass.name})")
         val message = error.message.orEmpty().lowercase()
         return when {
             "logon" in message || "authentication" in message || "credentials" in message -> SourceFailure.AuthenticationRejected(error)
@@ -202,6 +201,12 @@ private class JcifsSmbShareDiscovery : SmbShareDiscovery {
         val properties = Properties().apply {
             setProperty("jcifs.smb.client.minVersion", "SMB202")
             setProperty("jcifs.smb.client.maxVersion", "SMB311")
+            setProperty("jcifs.smb.client.responseTimeout", "10000")
+            setProperty("jcifs.smb.client.soTimeout", "10000")
+            // Prefer signing where supported. jcifs cannot reliably sign the IPC$ tree-connect
+            // packet on every SMB2/3 server, so do not fail locally before the server responds.
+            setProperty("jcifs.smb.client.signingPreferred", "true")
+            setProperty("jcifs.smb.client.ipcSigningEnforced", "false")
         }
         val baseContext = BaseContext(PropertyConfiguration(properties))
         val context = if (config.username.isNullOrBlank()) {
@@ -212,7 +217,8 @@ private class JcifsSmbShareDiscovery : SmbShareDiscovery {
         val root = SmbFile("smb://${config.endpoint.host}:${config.endpoint.port}/", context)
         return try {
             root.listFiles().asSequence()
-                .filter { it.type == SmbConstants.TYPE_SHARE }
+                // Entries returned for the server root are shares. Do not query type here:
+                // SmbFile.type triggers a second TREE_CONNECT for each entry.
                 .map { it.name.trimEnd('/') }
                 .filter { it.isNotBlank() && !it.endsWith('$') }
                 .distinctBy { it.lowercase() }
