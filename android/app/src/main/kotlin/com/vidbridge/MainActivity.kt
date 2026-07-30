@@ -82,8 +82,14 @@ private fun VidBridgeNav(container: AppContainer, isPipMode: Boolean) {
     val playbackState by (playbackService?.engine?.state ?: kotlinx.coroutines.flow.MutableStateFlow(PlayerState()))
         .collectAsState()
     val session = remember { container.playbackSession.read() }
-    val startDestination = remember(session) {
-        session?.let {
+    // Remote playback cannot be safely restored before the source is reachable.
+    // Only auto-open a session backed by a local file; remote items remain in the
+    // history/recent list and can be opened explicitly after connectivity returns.
+    val recoverableSession = remember(session) {
+        session?.takeIf { it.localPath?.let { path -> java.io.File(path).isFile } == true }
+    }
+    val startDestination = remember(recoverableSession) {
+        recoverableSession?.let {
             val playlist = it.playlistId?.let { id -> "&playlistId=${Uri.encode(id)}" }.orEmpty()
             "player/${it.sourceId}?path=${Uri.encode(it.path)}$playlist"
         } ?: "home"

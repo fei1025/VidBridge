@@ -63,6 +63,11 @@ class PlaybackService : Service() {
             engine.state.collectLatest { state ->
                 updateNotification(state)
                 PlaybackWidgetProvider.update(this@PlaybackService, title, state)
+                if (state.playbackState == PlayerPlaybackState.ERROR) {
+                    // Do not leave a failed remote item as the next app-start route.
+                    // Playback history still keeps the user's progress.
+                    sessionStore.clear()
+                }
                 if (state.playbackState == PlayerPlaybackState.ENDED) {
                     sessionStore.clear()
                     stopForeground(STOP_FOREGROUND_DETACH)

@@ -2198,11 +2198,15 @@ fun PlayerScreen(
                     )
                 },
         )
-        if (!inPipMode && controlsVisible) {
+        // Keep an escape hatch visible even when controls were hidden before the
+        // process was killed or the playback service failed to reconnect.
+        if (!inPipMode) {
             IconButton(
                 onClick = { exitPlayback() },
                 modifier = Modifier.align(Alignment.TopStart).padding(12.dp),
             ) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = androidx.compose.ui.graphics.Color.White) }
+        }
+        if (!inPipMode && controlsVisible) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 IconButton(
                     onClick = {

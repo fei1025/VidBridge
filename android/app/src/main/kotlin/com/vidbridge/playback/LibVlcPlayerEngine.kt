@@ -84,6 +84,16 @@ class LibVlcPlayerEngine(context: Context) : PlayerEngine {
     }
 
     override fun play() {
+        // libVLC stays at EndReached after the last frame. Calling play() alone
+        // does not reopen that media, so rebuild it before starting again.
+        if (mutableState.value.playbackState == PlayerPlaybackState.ENDED) {
+            lastMedia?.let { media ->
+                prepare(media.copy(startPositionMs = restartPositionAfterEnd(
+                    mutableState.value.positionMs,
+                    mutableState.value.durationMs,
+                )))
+            }
+        }
         player.play()
     }
 
@@ -92,7 +102,16 @@ class LibVlcPlayerEngine(context: Context) : PlayerEngine {
     }
 
     override fun seekTo(positionMs: Long) {
-        player.time = positionMs.coerceAtLeast(0L)
+        val position = positionMs.coerceAtLeast(0L)
+        if (mutableState.value.playbackState == PlayerPlaybackState.ENDED) {
+            // Seeking from EndReached also needs a fresh media item. Keep it
+            // paused/preparing so the next press of Play starts at the seeked time.
+            lastMedia?.let {
+                prepare(it.copy(startPositionMs = position))
+                return
+            }
+        }
+        player.time = position
     }
 
     override fun setSpeed(speed: Float) {
@@ -200,3 +219,7 @@ internal fun clampAudioDelayMs(value: Long): Long = value.coerceIn(-10_000L, 10_
 
 internal fun retryStartPosition(originalPositionMs: Long, currentPositionMs: Long): Long =
     maxOf(originalPositionMs, currentPositionMs).coerceAtLeast(0L)
+
+internal fun restartPositionAfterEnd(positionMs: Long, durationMs: Long): Long =
+    if (durationMs > 0L && positionMs >= (durationMs - 1_000L).coerceAtLeast(0L)) 0L
+    else positionMs.coerceAtLeast(0L)
