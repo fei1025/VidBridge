@@ -8,8 +8,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.ActivityInfo
+import android.media.AudioManager
 import android.os.IBinder
 import android.os.Build
+import android.provider.Settings
 import android.util.Rational
 import android.util.Log
 import android.view.WindowManager
@@ -31,7 +33,10 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -68,6 +73,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -96,10 +102,18 @@ import com.vidbridge.playback.PlayerMedia
 import com.vidbridge.playback.PlayerState
 import com.vidbridge.playback.PlayerTrack
 import com.vidbridge.playback.PlayerVideoScale
+import com.vidbridge.playback.PlaybackGesture
 import com.vidbridge.playback.PlaybackService
 import com.vidbridge.playback.localRecoveryPath
 import com.vidbridge.playback.PlaybackSourceResolver
+import com.vidbridge.playback.SeekPreviewRequestGate
+import com.vidbridge.playback.LibVlcSeekPreviewController
+import com.vidbridge.playback.gestureSeekTargetMs
+import com.vidbridge.playback.resolvePlaybackGesture
+import com.vidbridge.playback.verticalGestureFraction
+import com.vidbridge.playback.volumeForVerticalGesture
 import kotlinx.coroutines.flow.emptyFlow
+import kotlin.math.abs
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1922,14 +1936,34 @@ fun PlayerScreen(
     val effectiveLocalPath = download?.localPath ?: recoveredLocalPath
     var isSeeking by remember { mutableStateOf(false) }
     var seekValue by remember { mutableFloatStateOf(0f) }
+    val seekPreviewGate = remember { SeekPreviewRequestGate(minimumIntervalMs = 50L) }
+    var seekPreviewTargetMs by remember { mutableLongStateOf(0L) }
+    val seekPreviewController = remember(context) { LibVlcSeekPreviewController(context) }
+    val seekPreviewState by seekPreviewController.state.collectAsStateWithLifecycle()
+    var gestureSeekStartPositionMs by remember { mutableLongStateOf(0L) }
+    var adjustmentGesture by remember { mutableStateOf<PlaybackGesture?>(null) }
+    var adjustmentPercent by remember { mutableIntStateOf(0) }
+    var gestureBrightnessStart by remember { mutableFloatStateOf(0.5f) }
+    var gestureVolumeStart by remember { mutableIntStateOf(0) }
     var exitHandled by remember { mutableStateOf(false) }
     var controlsVisible by rememberSaveable { mutableStateOf(true) }
     var externalSubtitlePath by rememberSaveable { mutableStateOf<String?>(null) }
     var autoSubtitlePath by rememberSaveable { mutableStateOf<String?>(null) }
     val subtitlePath = externalSubtitlePath ?: autoSubtitlePath
+    val previewMedia = source?.let { config ->
+        buildPlaybackMedia(playbackSourceResolver, config, activePath, effectiveLocalPath, preferences, subtitlePath)
+    }
+    val currentPreviewMedia by rememberUpdatedState(previewMedia)
+    val currentEngine by rememberUpdatedState(engine)
+    val currentDurationMs by rememberUpdatedState(playerState.durationMs)
+    val currentPositionMs by rememberUpdatedState(playerState.positionMs)
+    val currentInPipMode by rememberUpdatedState(inPipMode)
     var queueMenuExpanded by remember { mutableStateOf(false) }
     val playerFocusRequester = remember { FocusRequester() }
     val scope = rememberCoroutineScope()
+    var previewRequestJob by remember { mutableStateOf<Job?>(null) }
+    var previewInteractionActive by remember { mutableStateOf(false) }
+    val audioManager = remember(context) { context.getSystemService(AudioManager::class.java) }
     val subtitlePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
         scope.launch {
@@ -2011,10 +2045,28 @@ fun PlayerScreen(
         }.onFailure { Log.d("VidBridgeVLC", "No adjacent subtitle for $activePath", it) }
     }
     DisposableEffect(Unit) {
-        onDispose { if (!exitHandled) saveEngineProgress(container, activeSourceId, activePath, engine, currentPreferences, scope) }
+        onDispose {
+            previewRequestJob?.cancel()
+            if (!exitHandled) saveEngineProgress(container, activeSourceId, activePath, engine, currentPreferences, scope)
+        }
     }
     DisposableEffect(engine, videoLayout) {
         onDispose { engine?.detachSurface() }
+    }
+    DisposableEffect(seekPreviewController) {
+        onDispose { seekPreviewController.close() }
+    }
+    LaunchedEffect(activeSourceId, activePath) {
+        previewRequestJob?.cancel()
+        previewInteractionActive = false
+        seekPreviewGate.reset()
+        seekPreviewController.clearMedia()
+    }
+    LaunchedEffect(inPipMode) {
+        if (inPipMode) seekPreviewController.stopPreview()
+    }
+    LaunchedEffect(previewMedia, inPipMode) {
+        if (!inPipMode) previewMedia?.let { seekPreviewController.prime(it, currentPositionMs) }
     }
     LaunchedEffect(videoLayout, source, activeSourceId, activePath, engine, subtitlePath) {
         val layout = videoLayout ?: return@LaunchedEffect
@@ -2036,13 +2088,13 @@ fun PlayerScreen(
             layout.post {
                 activeEngine.attachSurface(layout)
                 playbackService?.prepare(
-                    PlayerMedia(
-                        playbackSourceResolver.uri(config, activePath, effectiveLocalPath),
-                        buildList {
-                            if (effectiveLocalPath == null) addAll(playbackSourceResolver.options(config, preferences))
-                            else add(":file-caching=300")
-                            subtitlePath?.let { add(":sub-file=$it") }
-                        },
+                    buildPlaybackMedia(
+                        playbackSourceResolver,
+                        config,
+                        activePath,
+                        effectiveLocalPath,
+                        preferences,
+                        subtitlePath,
                         resumeAt,
                     ),
                     activePath.substringAfterLast('/'),
@@ -2154,6 +2206,78 @@ fun PlayerScreen(
             }
         }
     }
+    fun requestSeekPreview(positionMs: Long) {
+        val target = positionMs.coerceIn(0L, currentDurationMs.coerceAtLeast(0L))
+        seekPreviewTargetMs = target
+        if (currentDurationMs > 0L) seekValue = target.toFloat() / currentDurationMs
+        previewInteractionActive = true
+        if (!isSeeking) {
+            isSeeking = true
+            gestureSeekStartPositionMs = currentPositionMs
+        }
+        val now = android.os.SystemClock.uptimeMillis()
+        if (seekPreviewGate.shouldRequest(target, now)) {
+            previewRequestJob?.cancel()
+            previewRequestJob = null
+            currentPreviewMedia?.let { seekPreviewController.request(it, target) }
+        } else {
+            val trailingDelayMs = seekPreviewGate.delayUntilRequest(target, now)
+            if (trailingDelayMs != null && previewRequestJob?.isActive != true) {
+                previewRequestJob = scope.launch {
+                    delay(trailingDelayMs.coerceAtLeast(1L))
+                    if (previewInteractionActive) {
+                        val latestTarget = seekPreviewTargetMs
+                        if (seekPreviewGate.shouldRequest(latestTarget, android.os.SystemClock.uptimeMillis())) {
+                            currentPreviewMedia?.let { seekPreviewController.request(it, latestTarget) }
+                        }
+                    }
+                    previewRequestJob = null
+                }
+            }
+        }
+    }
+    fun finishSeekPreview(commit: Boolean) {
+        previewInteractionActive = false
+        previewRequestJob?.cancel()
+        previewRequestJob = null
+        if (commit) currentEngine?.seekTo(seekPreviewTargetMs)
+        isSeeking = false
+        seekPreviewGate.reset()
+        seekPreviewController.stopPreview()
+    }
+    fun beginAdjustment(gesture: PlaybackGesture) {
+        adjustmentGesture = gesture
+        when (gesture) {
+            PlaybackGesture.BRIGHTNESS -> {
+                gestureBrightnessStart = currentPlaybackBrightness(context as? Activity)
+                adjustmentPercent = (gestureBrightnessStart * 100).toInt()
+            }
+            PlaybackGesture.VOLUME -> {
+                gestureVolumeStart = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                val maximum = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                adjustmentPercent = if (maximum > 0) gestureVolumeStart * 100 / maximum else 0
+            }
+            PlaybackGesture.SEEK -> Unit
+        }
+    }
+    fun updateAdjustment(gesture: PlaybackGesture, deltaY: Float, height: Float) {
+        when (gesture) {
+            PlaybackGesture.BRIGHTNESS -> {
+                val brightness = verticalGestureFraction(gestureBrightnessStart, deltaY, height)
+                (context as? Activity)?.window?.let { window ->
+                    window.attributes = window.attributes.apply { screenBrightness = brightness }
+                }
+                adjustmentPercent = (brightness * 100).toInt()
+            }
+            PlaybackGesture.VOLUME -> {
+                val maximum = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                val volume = volumeForVerticalGesture(gestureVolumeStart, maximum, deltaY, height)
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, volume, 0)
+                adjustmentPercent = if (maximum > 0) volume * 100 / maximum else 0
+            }
+            PlaybackGesture.SEEK -> Unit
+        }
+    }
     Box(
         Modifier
             .fillMaxSize()
@@ -2188,16 +2312,149 @@ fun PlayerScreen(
             },
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(playerState.durationMs) {
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        var lockedGesture: PlaybackGesture? = null
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: continue
+                            val deltaX = change.position.x - down.position.x
+                            val deltaY = change.position.y - down.position.y
+                            if (
+                                lockedGesture == null &&
+                                !currentInPipMode &&
+                                (abs(deltaX) > viewConfiguration.touchSlop || abs(deltaY) > viewConfiguration.touchSlop)
+                            ) {
+                                val resolved = resolvePlaybackGesture(
+                                    deltaX,
+                                    deltaY,
+                                    down.position.x,
+                                    size.width.toFloat(),
+                                )
+                                if (resolved != PlaybackGesture.SEEK || currentDurationMs > 0L) {
+                                    lockedGesture = resolved
+                                    when (resolved) {
+                                        PlaybackGesture.SEEK -> {
+                                            controlsVisible = true
+                                            gestureSeekStartPositionMs = currentPositionMs
+                                            requestSeekPreview(currentPositionMs)
+                                        }
+                                        PlaybackGesture.BRIGHTNESS,
+                                        PlaybackGesture.VOLUME -> beginAdjustment(resolved)
+                                    }
+                                }
+                            }
+                            lockedGesture?.let { gesture ->
+                                change.consume()
+                                when (gesture) {
+                                    PlaybackGesture.SEEK -> requestSeekPreview(
+                                        gestureSeekTargetMs(
+                                            gestureSeekStartPositionMs,
+                                            deltaX,
+                                            size.width.toFloat(),
+                                            currentDurationMs,
+                                        ),
+                                    )
+                                    PlaybackGesture.BRIGHTNESS,
+                                    PlaybackGesture.VOLUME -> updateAdjustment(
+                                        gesture,
+                                        deltaY,
+                                        size.height.toFloat(),
+                                    )
+                                }
+                            }
+                            if (change.changedToUpIgnoreConsumed()) {
+                                when (lockedGesture) {
+                                    PlaybackGesture.SEEK -> finishSeekPreview(commit = true)
+                                    PlaybackGesture.BRIGHTNESS,
+                                    PlaybackGesture.VOLUME -> adjustmentGesture = null
+                                    null -> Unit
+                                }
+                                break
+                            }
+                        }
+                    }
+                }
+                .pointerInput(Unit) {
                     detectTapGestures(
                         onTap = { controlsVisible = !controlsVisible },
                         onDoubleTap = { position ->
                             val delta = if (position.x < size.width / 2f) -10_000L else 10_000L
-                            engine?.seekTo((playerState.positionMs + delta).coerceIn(0L, playerState.durationMs))
+                            currentEngine?.seekTo((currentPositionMs + delta).coerceIn(0L, currentDurationMs))
                         },
                     )
                 },
         )
+        // Keep one TextureView attached for the whole screen. Reusing it lets
+        // libVLC seek repeatedly without losing the preview video output.
+        Surface(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = if (controlsVisible) 138.dp else 48.dp)
+                .alpha(if (previewInteractionActive) 1f else 0f),
+            color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.72f),
+            shape = MaterialTheme.shapes.medium,
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Box(
+                    modifier = Modifier.width(192.dp).height(108.dp).background(androidx.compose.ui.graphics.Color.Black),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    AndroidView(
+                        factory = { previewContext ->
+                            VLCVideoLayout(previewContext).also(seekPreviewController::attach)
+                        },
+                        update = seekPreviewController::attach,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                    if (previewInteractionActive && seekPreviewState.failed) {
+                        Text("预览解码失败", color = androidx.compose.ui.graphics.Color.White)
+                    }
+                }
+                Text(
+                    "${formatPlaybackTime(seekPreviewTargetMs)} / ${formatPlaybackTime(currentDurationMs)}",
+                    color = androidx.compose.ui.graphics.Color.White,
+                )
+                val offset = seekPreviewTargetMs - gestureSeekStartPositionMs
+                Text(
+                    when {
+                        offset > 0L -> "快进 ${formatPlaybackTime(offset)}"
+                        offset < 0L -> "快退 ${formatPlaybackTime(-offset)}"
+                        else -> "定位预览"
+                    },
+                    color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.8f),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+        adjustmentGesture?.let { gesture ->
+            Surface(
+                modifier = Modifier.align(Alignment.Center),
+                color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.76f),
+                shape = MaterialTheme.shapes.medium,
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(
+                        if (gesture == PlaybackGesture.BRIGHTNESS) Icons.Default.Brightness6 else Icons.Default.VolumeUp,
+                        if (gesture == PlaybackGesture.BRIGHTNESS) "亮度" else "音量",
+                        tint = androidx.compose.ui.graphics.Color.White,
+                    )
+                    Text(
+                        "${if (gesture == PlaybackGesture.BRIGHTNESS) "亮度" else "音量"} $adjustmentPercent%",
+                        color = androidx.compose.ui.graphics.Color.White,
+                    )
+                }
+            }
+        }
         // Keep an escape hatch visible even when controls were hidden before the
         // process was killed or the playback service failed to reconnect.
         if (!inPipMode) {
@@ -2261,18 +2518,18 @@ fun PlayerScreen(
                     Slider(
                         value = if (isSeeking) seekValue else if (playerState.durationMs > 0L) playerState.positionMs.toFloat() / playerState.durationMs else 0f,
                         onValueChange = {
-                            isSeeking = true
                             seekValue = it
+                            requestSeekPreview((it * playerState.durationMs).toLong())
                         },
                         onValueChangeFinished = {
-                            engine?.seekTo((seekValue * playerState.durationMs).toLong())
-                            isSeeking = false
+                            seekPreviewTargetMs = (seekValue * playerState.durationMs).toLong()
+                            finishSeekPreview(commit = true)
                         },
                         enabled = playerState.durationMs > 0L,
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            "${formatPlaybackTime(playerState.positionMs)} / ${formatPlaybackTime(playerState.durationMs)}",
+                            "${formatPlaybackTime(if (isSeeking) seekPreviewTargetMs else playerState.positionMs)} / ${formatPlaybackTime(playerState.durationMs)}",
                             color = androidx.compose.ui.graphics.Color.White,
                             modifier = Modifier.weight(1f),
                         )
@@ -2401,6 +2658,35 @@ private fun formatPlaybackTime(milliseconds: Long): String {
     val seconds = totalSeconds % 60L
     return if (hours > 0L) "%d:%02d:%02d".format(hours, minutes, seconds)
     else "%02d:%02d".format(minutes, seconds)
+}
+
+private fun buildPlaybackMedia(
+    resolver: PlaybackSourceResolver,
+    config: MediaSourceConfig,
+    path: String,
+    localPath: String?,
+    preferences: PlayerPreferences,
+    subtitlePath: String?,
+    startPositionMs: Long = 0L,
+): PlayerMedia = PlayerMedia(
+    resolver.uri(config, path, localPath),
+    buildList {
+        if (localPath == null) addAll(resolver.options(config, preferences))
+        else add(":file-caching=300")
+        subtitlePath?.let { add(":sub-file=$it") }
+    },
+    startPositionMs,
+)
+
+private fun currentPlaybackBrightness(activity: Activity?): Float {
+    val override = activity?.window?.attributes?.screenBrightness ?: -1f
+    if (override in 0f..1f) return override.coerceAtLeast(com.vidbridge.playback.MIN_WINDOW_BRIGHTNESS)
+    val system = activity?.let { currentActivity ->
+        runCatching {
+            Settings.System.getInt(currentActivity.contentResolver, Settings.System.SCREEN_BRIGHTNESS) / 255f
+        }.getOrDefault(0.5f)
+    } ?: 0.5f
+    return system.coerceIn(com.vidbridge.playback.MIN_WINDOW_BRIGHTNESS, 1f)
 }
 
 private fun findMatchingSubtitle(mediaPath: String, entries: List<RemoteEntry>): RemoteEntry? {
